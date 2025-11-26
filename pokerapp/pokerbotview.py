@@ -123,29 +123,17 @@ class PokerBotViewer:
         bio.name = 'desk.png'
         im_cards.save(bio, 'PNG')
         bio.seek(0)
-        # Use delayed method if available, otherwise use regular method
-        if hasattr(self._bot, 'send_photo_delayed'):
-            # For sending an image instead of media group using delayed method
-            msg = self._bot.send_photo_delayed(
-                chat_id=chat_id,
-                photo=bio,
-                caption=caption,
-                disable_notification=disable_notification
-            )
-        else:
-            msg = self._bot.send_photo(
-                chat_id=chat_id,
-                photo=bio,
-                caption=caption,
-                disable_notification=disable_notification
-            )
+        msg = self._bot.send_photo(
+            chat_id=chat_id,
+            photo=bio,
+            caption=caption,
+            disable_notification=disable_notification
+        )
         return msg.message_id
 
     @staticmethod
     def _get_cards_markup(cards: Cards) -> ReplyKeyboardMarkup:
-        markup = ReplyKeyboardMarkup(resize_keyboard=True, selective=True)
-        markup['keyboard'] = [cards]
-        return markup
+        return ReplyKeyboardMarkup([cards], True, True)
 
     @staticmethod
     def _get_turns_markup(
