@@ -97,7 +97,8 @@ class PokerBotViewer:
                 chat_id=chat_id,
                 text=text,
                 parse_mode='Markdown',
-                reply_to_message_id=int(message_id),  # Convert message_id to int
+                # Convert message_id to int
+                reply_to_message_id=int(message_id),
                 disable_notification=True,
             )
         else:
@@ -105,7 +106,8 @@ class PokerBotViewer:
                 chat_id=chat_id,
                 text=text,
                 parse_mode='Markdown',
-                reply_to_message_id=int(message_id),  # Convert message_id to int
+                # Convert message_id to int
+                reply_to_message_id=int(message_id),
                 disable_notification=True,
             )
 
@@ -139,15 +141,13 @@ class PokerBotViewer:
             )
         return msg.message_id
 
-    @ staticmethod
+    @staticmethod
     def _get_cards_markup(cards: Cards) -> ReplyKeyboardMarkup:
-        return ReplyKeyboardMarkup(
-            keyboard=[cards],
-            selective=True,
-            resize_keyboard=True,
-        )
+        markup = ReplyKeyboardMarkup(resize_keyboard=True, selective=True)
+        markup['keyboard'] = [cards]
+        return markup
 
-    @ staticmethod
+    @staticmethod
     def _get_turns_markup(
         check_call_action: PlayerAction
     ) -> InlineKeyboardMarkup:
@@ -211,7 +211,7 @@ class PokerBotViewer:
                 disable_notification=True,
             )
 
-    @ staticmethod
+    @staticmethod
     def define_check_call_action(
         game: Game,
         player: Player,
