@@ -313,12 +313,12 @@ class PokerBotModel:
 
             private_chat_id = private_chat_id.decode('utf-8')
 
-            message_id = self._view.send_desk_cards_img(
+            message_id = str(self._view.send_desk_cards_img(
                 chat_id=private_chat_id,
                 cards=cards,
                 caption="کارت‌های شما",
                 disable_notification=False,
-            )
+            ))
 
             try:
                 rm_msg_id = user_chat_model.pop_message()
