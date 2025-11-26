@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import datetime
+import logging
 import traceback
 from threading import Timer
 from typing import List, Tuple, Dict
@@ -89,25 +90,39 @@ class PokerBotModel:
             self._view.send_message_reply(
                 chat_id=chat_id,
                 message_id=message.message_id,
-                text="The game is already started. Wait!"
+                text="بازی شروع شده. صبر کنید!"
             )
             return
 
         if len(game.players) > MAX_PLAYERS:
             self._view.send_message_reply(
                 chat_id=chat_id,
-                text="The room is full",
+                text="اتاق پر است",
                 message_id=message.message_id,
             )
             return
 
         user = message.from_user
 
+        # Check if user has started private chat with bot
+        user_chat_model = UserPrivateChatModel(
+            user_id=str(user.id),
+            kv=self._kv,
+        )
+        private_chat_id = user_chat_model.get_chat_id()
+        if private_chat_id is None:
+            self._view.send_message_reply(
+                chat_id=chat_id,
+                message_id=message.message_id,
+                text="لطفا ابتدا ربات را در چت خصوصی خود استارت کنید تا کارت‌های شما به صورت خصوصی ارسال شود. سپس دوباره /ready را امتحان کنید.",
+            )
+            return
+
         if user.id in game.ready_users:
             self._view.send_message_reply(
                 chat_id=chat_id,
                 message_id=message.message_id,
-                text="You are already ready",
+                text="شما قبلا آماده هستید",
             )
             return
 
@@ -122,7 +137,7 @@ class PokerBotModel:
             return self._view.send_message_reply(
                 chat_id=chat_id,
                 message_id=message.message_id,
-                text="You don't have enough money",
+                text="شما پول کافی ندارید",
             )
 
         game.ready_users.add(str(user.id))
@@ -147,7 +162,7 @@ class PokerBotModel:
         if game.state not in (GameState.INITIAL, GameState.FINISHED):
             self._view.send_message(
                 chat_id=chat_id,
-                text="The game is already in progress"
+                text="بازی در حال انجام است"
             )
             return
 
@@ -176,7 +191,7 @@ class PokerBotModel:
         else:
             self._view.send_message(
                 chat_id=chat_id,
-                text="Not enough player"
+                text="بازیکن کافی وجود ندارد"
             )
         return
 
@@ -192,7 +207,7 @@ class PokerBotModel:
 
         self._view.send_message(
             chat_id=chat_id,
-            text='The game is started! 🃏',
+            text='بازی شروع شد! 🃏',
             reply_markup=markup,
         )
 
@@ -216,7 +231,7 @@ class PokerBotModel:
             return self._view.send_message_reply(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"Your money: *{money}$*\n",
+                text=f"پول شما: *{money}$*\n",
             )
 
         icon: str
@@ -247,8 +262,8 @@ class PokerBotModel:
             self._view.send_message_reply(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"Bonus: *{bonus}$* {icon}\n" +
-                f"Your money: *{money}$*\n",
+                text=f"جایزه: *{bonus}$* {icon}\n" +
+                f"پول شما: *{money}$*\n",
             )
 
         Timer(DICE_DELAY_SEC, print_bonus).start()
@@ -284,42 +299,47 @@ class PokerBotModel:
         return False
 
     def _send_cards_private(self, player: Player, cards: Cards) -> None:
-        user_chat_model = UserPrivateChatModel(
-            user_id=player.user_id,
-            kv=self._kv,
-        )
-        private_chat_id = user_chat_model.get_chat_id()
-
-        if private_chat_id is None:
-            raise ValueError("private chat not found")
-
-        private_chat_id = private_chat_id.decode('utf-8')
-
-        message_id = self._view.send_desk_cards_img(
-            chat_id=private_chat_id,
-            cards=cards,
-            caption="Your cards",
-            disable_notification=False,
-        ).message_id
-
         try:
-            rm_msg_id = user_chat_model.pop_message()
-            while rm_msg_id is not None:
-                try:
-                    rm_msg_id = rm_msg_id.decode('utf-8')
-                    self._view.remove_message(
-                        chat_id=private_chat_id,
-                        message_id=rm_msg_id,
-                    )
-                except Exception as ex:
-                    print("remove_message", ex)
-                    traceback.print_exc()
-                rm_msg_id = user_chat_model.pop_message()
+            user_chat_model = UserPrivateChatModel(
+                user_id=player.user_id,
+                kv=self._kv,
+            )
+            private_chat_id = user_chat_model.get_chat_id()
 
-            user_chat_model.push_message(message_id=message_id)
-        except Exception as ex:
-            print("bulk_remove_message", ex)
-            traceback.print_exc()
+            if private_chat_id is None:
+                logging.warning(
+                    f"Private chat not found for user {player.user_id}")
+                return  # Instead of raising, just return to avoid crashing
+
+            private_chat_id = private_chat_id.decode('utf-8')
+
+            message_id = self._view.send_desk_cards_img(
+                chat_id=private_chat_id,
+                cards=cards,
+                caption="کارت‌های شما",
+                disable_notification=False,
+            )
+
+            try:
+                rm_msg_id = user_chat_model.pop_message()
+                while rm_msg_id is not None:
+                    try:
+                        rm_msg_id = rm_msg_id.decode('utf-8')
+                        self._view.remove_message(
+                            chat_id=private_chat_id,
+                            message_id=rm_msg_id,
+                        )
+                    except Exception as ex:
+                        logging.error(
+                            f"remove_message error: {ex}", exc_info=True)
+                    rm_msg_id = user_chat_model.pop_message()
+
+                user_chat_model.push_message(message_id=message_id)
+            except Exception as ex:
+                logging.error(
+                    f"bulk_remove_message error: {ex}", exc_info=True)
+        except Exception as e:
+            logging.error(f"Error in _send_cards_private: {e}", exc_info=True)
 
     def _divide_cards(self, game: Game, chat_id: ChatId) -> None:
         for player in game.players:
@@ -402,7 +422,7 @@ class PokerBotModel:
         self._view.send_desk_cards_img(
             chat_id=chat_id,
             cards=game.cards_table,
-            caption=f"Current pot: {game.pot}$",
+            caption=f"پات فعلی: {game.pot}$",
         )
 
     def _finish(
@@ -433,19 +453,19 @@ class PokerBotModel:
         )
 
         only_one_player = len(active_players) == 1
-        text = "Game is finished with result:\n\n"
+        text = "بازی با نتیجه زیر تمام شد:\n\n"
         for (player, best_hand, money) in winners_hand_money:
             win_hand = " ".join(best_hand)
             text += (
                 f"{player.mention_markdown}:\n" +
-                f"GOT: *{money} $*\n"
+                f"دریافت کرد: *{money} $*\n"
             )
             if not only_one_player:
                 text += (
-                    "With combination of cards:\n" +
+                    "با ترکیب کارت‌های:\n" +
                     f"{win_hand}\n\n"
                 )
-        text += "/ready to continue"
+        text += "/ready برای ادامه"
         self._view.send_message(chat_id=chat_id, text=text)
 
         for player in game.players:
@@ -526,65 +546,79 @@ class PokerBotModel:
         if diff < MAX_TIME_FOR_TURN:
             self._view.send_message(
                 chat_id=chat_id,
-                text="You can't ban. Max turn time is 2 minutes",
+                text="نمی‌توانید محرومیت اعمال کنید. حداکثر زمان نوبت ۲ دقیقه است",
             )
             return
 
         self._view.send_message(
             chat_id=chat_id,
-            text="Time is over!",
+            text="زمان تمام شد!",
         )
         self.fold(message)
 
     def fold(self, call) -> None:
         # This method is called with a callback query
-        if hasattr(call, 'message'):
+        try:
+            if hasattr(call, 'message'):
+                chat_id = str(call.message.chat.id)
+                game = self._get_or_create_game(chat_id)
+                player = self._current_turn_player(game)
+
+                player.state = PlayerState.FOLD
+
+                self._view.send_message(
+                    chat_id=chat_id,
+                    text=f"{player.mention_markdown} {PlayerAction.FOLD.value}"
+                )
+
+                self._process_playing(
+                    chat_id=chat_id,
+                    game=game,
+                )
+            else:
+                logging.error(
+                    "fold called with invalid call object: no message attribute")
+        except Exception as e:
+            logging.error(f"Error in fold: {e}", exc_info=True)
+
+    def call_check(self, call) -> None:
+        # This method is called with a callback query
+        try:
+            if not hasattr(call, 'message'):
+                logging.error(
+                    "call_check called with invalid call object: no message attribute")
+                return
             chat_id = str(call.message.chat.id)
             game = self._get_or_create_game(chat_id)
             player = self._current_turn_player(game)
 
-            player.state = PlayerState.FOLD
+            action = PlayerAction.CALL.value
+            if player.round_rate == game.max_round_rate:
+                action = PlayerAction.CHECK.value
 
-            self._view.send_message(
-                chat_id=chat_id,
-                text=f"{player.mention_markdown} {PlayerAction.FOLD.value}"
-            )
+            try:
+                amount = game.max_round_rate - player.round_rate
+                if player.wallet.value() <= amount:
+                    return self.all_in(call)
+
+                mention_markdown = self._current_turn_player(
+                    game).mention_markdown
+                self._view.send_message(
+                    chat_id=chat_id,
+                    text=f"{mention_markdown} {action}"
+                )
+
+                self._round_rate.call_check(game, player)
+            except UserException as e:
+                self._view.send_message(chat_id=chat_id, text=str(e))
+                return
 
             self._process_playing(
                 chat_id=chat_id,
                 game=game,
             )
-
-    def call_check(self, call) -> None:
-        # This method is called with a callback query
-        chat_id = str(call.message.chat.id)
-        game = self._get_or_create_game(chat_id)
-        player = self._current_turn_player(game)
-
-        action = PlayerAction.CALL.value
-        if player.round_rate == game.max_round_rate:
-            action = PlayerAction.CHECK.value
-
-        try:
-            amount = game.max_round_rate - player.round_rate
-            if player.wallet.value() <= amount:
-                return self.all_in(call)
-
-            mention_markdown = self._current_turn_player(game).mention_markdown
-            self._view.send_message(
-                chat_id=chat_id,
-                text=f"{mention_markdown} {action}"
-            )
-
-            self._round_rate.call_check(game, player)
-        except UserException as e:
-            self._view.send_message(chat_id=chat_id, text=str(e))
-            return
-
-        self._process_playing(
-            chat_id=chat_id,
-            game=game,
-        )
+        except Exception as e:
+            logging.error(f"Error in call_check: {e}", exc_info=True)
 
     def raise_rate_bet(
         self,
@@ -617,17 +651,24 @@ class PokerBotModel:
         self._process_playing(chat_id=chat_id, game=game)
 
     def all_in(self, call) -> None:
-        chat_id = str(call.message.chat.id)
-        game = self._get_or_create_game(chat_id)
-        player = self._current_turn_player(game)
-        mention = player.mention_markdown
-        amount = self._round_rate.all_in(game, player)
-        self._view.send_message(
-            chat_id=chat_id,
-            text=f"{mention} {PlayerAction.ALL_IN.value} {amount}$"
-        )
-        player.state = PlayerState.ALL_IN
-        self._process_playing(chat_id=chat_id, game=game)
+        try:
+            if not hasattr(call, 'message'):
+                logging.error(
+                    "all_in called with invalid call object: no message attribute")
+                return
+            chat_id = str(call.message.chat.id)
+            game = self._get_or_create_game(chat_id)
+            player = self._current_turn_player(game)
+            mention = player.mention_markdown
+            amount = self._round_rate.all_in(game, player)
+            self._view.send_message(
+                chat_id=chat_id,
+                text=f"{mention} {PlayerAction.ALL_IN.value} {amount}$"
+            )
+            player.state = PlayerState.ALL_IN
+            self._process_playing(chat_id=chat_id, game=game)
+        except Exception as e:
+            logging.error(f"Error in all_in: {e}", exc_info=True)
 
 
 class WalletManagerModel(Wallet):
@@ -669,13 +710,13 @@ class WalletManagerModel(Wallet):
         return self._kv.incrby(key, amount)
 
     def inc(self, amount: Money = 0) -> None:
-        """ Increase count of money in the wallet.
-            Decrease authorized money.
+        """ افزایش تعداد پول در کیف پول.
+            کاهش پول مجاز.
         """
         wallet = int(self._kv.get(self._prefix(self.user_id)).decode('utf-8'))
 
         if wallet + amount < 0:
-            raise UserException("not enough money")
+            raise UserException("پول کافی ندارید")
 
         self._kv.incrby(self._prefix(self.user_id), amount)
 
@@ -694,13 +735,13 @@ class WalletManagerModel(Wallet):
         return self._kv.get_authorized_money(self.user_id, game_id)
 
     def authorize(self, game_id: str, amount: Money) -> None:
-        """ Decrease count of money. """
+        """ کاهش تعداد پول. """
         self.inc_authorized_money(game_id, amount)
 
         return self.inc(-amount)
 
     def authorize_all(self, game_id: str) -> Money:
-        """ Decrease all money of player. """
+        """ کاهش تمام پول بازیکن. """
         wallet = int(self._kv.get(self._prefix(self.user_id)).decode('utf-8'))
         self.inc_authorized_money(game_id, wallet)
 

@@ -183,7 +183,7 @@ class PokerBotViewer:
         if hasattr(self._bot, 'send_message_delayed'):
             self._bot.send_message_delayed(
                 chat_id=chat_id,
-                text="Showing cards to " + mention_markdown,
+                text="نمایش کارت‌ها به " + mention_markdown,
                 reply_markup=markup,
                 reply_to_message_id=int(ready_message_id),
                 parse_mode='Markdown',
@@ -192,7 +192,7 @@ class PokerBotViewer:
         else:
             self._bot.send_message(
                 chat_id=chat_id,
-                text="Showing cards to " + mention_markdown,
+                text="نمایش کارت‌ها به " + mention_markdown,
                 reply_markup=markup,
                 reply_to_message_id=int(ready_message_id),
                 parse_mode='Markdown',
@@ -216,14 +216,14 @@ class PokerBotViewer:
             money: Money,
     ) -> None:
         if len(game.cards_table) == 0:
-            cards_table = "no cards"
+            cards_table = "بدون کارت"
         else:
             cards_table = " ".join(game.cards_table)
         text = (
-            "Turn of {}\n" +
+            "نوبت {}\n" +
             "{}\n" +
-            "Money: *{}$*\n" +
-            "Max round rate: *{}$*"
+            "پول: *{}$*\n" +
+            "حداکثر نرخ دور: *{}$*"
         ).format(
             player.mention_markdown,
             cards_table,

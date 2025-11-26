@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
+import logging
 import telebot
 from pokerapp.entities import PlayerAction
 from pokerapp.pokerbotmodel import PokerBotModel
+
+logger = logging.getLogger(__name__)
 
 
 class PokerBotCotroller:
@@ -12,34 +15,71 @@ class PokerBotCotroller:
 
         @bot.message_handler(commands=['ready'])
         def ready_handler(message):
-            self._handle_ready(message)
+            try:
+                self._handle_ready(message)
+            except Exception as e:
+                logger.error(f"Error in ready_handler: {e}", exc_info=True)
+                self._bot.send_message(
+                    message.chat.id, "An error occurred while processing your ready command.")
 
         @bot.message_handler(commands=['start'])
         def start_handler(message):
-            self._handle_start(message)
+            try:
+                self._handle_start(message)
+            except Exception as e:
+                logger.error(f"Error in start_handler: {e}", exc_info=True)
+                self._bot.send_message(
+                    message.chat.id, "خطایی در پردازش دستور شروع رخ داد. لطفا دوباره امتحان کنید.")
 
         @bot.message_handler(commands=['stop'])
         def stop_handler(message):
-            self._handle_stop(message)
+            try:
+                self._handle_stop(message)
+            except Exception as e:
+                logger.error(f"Error in stop_handler: {e}", exc_info=True)
+                self._bot.send_message(
+                    message.chat.id, "خطایی در پردازش دستور توقف رخ داد. لطفا دوباره امتحان کنید.")
 
         @bot.message_handler(commands=['money'])
         def money_handler(message):
-            self._handle_money(message)
+            try:
+                self._handle_money(message)
+            except Exception as e:
+                logger.error(f"Error in money_handler: {e}", exc_info=True)
+                self._bot.send_message(
+                    message.chat.id, "خطایی در پردازش دستور پول رخ داد. لطفا دوباره امتحان کنید.")
 
         @bot.message_handler(commands=['ban'])
         def ban_handler(message):
-            self._handle_ban(message)
+            try:
+                self._handle_ban(message)
+            except Exception as e:
+                logger.error(f"Error in ban_handler: {e}", exc_info=True)
+                self._bot.send_message(
+                    message.chat.id, "خطایی در پردازش دستور محرومیت رخ داد. لطفا دوباره امتحان کنید.")
 
         @bot.message_handler(commands=['cards'])
         def cards_handler(message):
-            self._handle_cards(message)
+            try:
+                self._handle_cards(message)
+            except Exception as e:
+                logger.error(f"Error in cards_handler: {e}", exc_info=True)
+                self._bot.send_message(
+                    message.chat.id, "خطایی در پردازش دستور کارت‌ها رخ داد. لطفا دوباره امتحان کنید.")
 
         @bot.callback_query_handler(func=lambda call: True)
         def button_click_handler(call):
-            self._model.middleware_user_turn_telebot(
-                self._handle_button_clicked,
-                call
-            )
+            try:
+                self._model.middleware_user_turn_telebot(
+                    self._handle_button_clicked,
+                    call
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error in button_click_handler: {e}", exc_info=True)
+                if hasattr(call, 'message'):
+                    self._bot.send_message(
+                        call.message.chat.id, "An error occurred while processing your button click.")
 
     def _handle_ready(self, message) -> None:
         self._model.ready(message)
