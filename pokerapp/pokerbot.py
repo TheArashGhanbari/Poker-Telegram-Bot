@@ -3,11 +3,11 @@
 import logging
 import threading
 import time
-import redis
 import telebot
 from typing import Callable
 
 from pokerapp.config import Config
+from pokerapp.db import SQLiteDB
 from pokerapp.pokerbotcontrol import PokerBotCotroller
 from pokerapp.pokerbotmodel import PokerBotModel
 from pokerapp.pokerbotview import PokerBotViewer
@@ -136,12 +136,7 @@ class PokerBot:
         self._bot = MessageDelayBot(token=token)
         self._bot.run_tasks_manager()
 
-        kv = redis.Redis(
-            host=cfg.REDIS_HOST,
-            port=cfg.REDIS_PORT,
-            db=cfg.REDIS_DB,
-            password=cfg.REDIS_PASS if cfg.REDIS_PASS != "" else None
-        )
+        kv = SQLiteDB(db_path=cfg.DB_PATH)
 
         self._view = PokerBotViewer(bot=self._bot)
         self._model = PokerBotModel(

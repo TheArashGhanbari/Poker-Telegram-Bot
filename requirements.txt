@@ -2,5 +2,4 @@ pyTelegramBotAPI
 flake8
 pillow
 PySocks
-redis
 python-dotenv

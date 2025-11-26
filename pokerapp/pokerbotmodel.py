@@ -5,7 +5,6 @@ import traceback
 from threading import Timer
 from typing import List, Tuple, Dict
 
-import redis
 import telebot
 from telebot.types import Message, ReplyKeyboardMarkup, InlineKeyboardMarkup
 
@@ -13,6 +12,7 @@ from pokerapp.config import Config
 from pokerapp.privatechatmodel import UserPrivateChatModel
 from pokerapp.winnerdetermination import WinnerDetermination
 from pokerapp.cards import Cards
+from pokerapp.db import SQLiteDB
 from pokerapp.entities import (
     Game,
     GameState,
@@ -52,12 +52,12 @@ class PokerBotModel:
         view: PokerBotViewer,
         bot: telebot.TeleBot,
         cfg: Config,
-        kv,
+        kv: SQLiteDB,
     ):
         self._view: PokerBotViewer = view
         self._bot: telebot.TeleBot = bot
         self._winner_determine: WinnerDetermination = WinnerDetermination()
-        self._kv = kv
+        self._kv: SQLiteDB = kv
         self._cfg: Config = cfg
         self._round_rate: RoundRateModel = RoundRateModel()
 
@@ -631,7 +631,7 @@ class PokerBotModel:
 
 
 class WalletManagerModel(Wallet):
-    def __init__(self, user_id: UserId, kv: redis.Redis):
+    def __init__(self, user_id: UserId, kv: SQLiteDB):
         self.user_id = user_id
         self._kv = kv
 
@@ -640,7 +640,7 @@ class WalletManagerModel(Wallet):
             self._kv.set(key, DEFAULT_MONEY)
 
     @staticmethod
-    def _prefix(id: int, suffix: str = ""):
+    def _prefix(id: str, suffix: str = ""):
         return "pokerbot:" + str(id) + suffix
 
     def _current_date(self) -> str:
@@ -672,7 +672,7 @@ class WalletManagerModel(Wallet):
         """ Increase count of money in the wallet.
             Decrease authorized money.
         """
-        wallet = int(self._kv.get(self._prefix(self.user_id)))
+        wallet = int(self._kv.get(self._prefix(self.user_id)).decode('utf-8'))
 
         if wallet + amount < 0:
             raise UserException("not enough money")
@@ -684,12 +684,14 @@ class WalletManagerModel(Wallet):
         game_id: str,
         amount: Money
     ) -> None:
-        key_authorized_money = self._prefix(self.user_id, ":" + game_id)
-        self._kv.incrby(key_authorized_money, amount)
+        # Use the new method in SQLiteDB for authorized money
+        current_amount = self._kv.get_authorized_money(self.user_id, game_id)
+        new_amount = current_amount + amount
+        self._kv.set_authorized_money(self.user_id, game_id, new_amount)
 
     def authorized_money(self, game_id: str) -> Money:
-        key_authorized_money = self._prefix(self.user_id, ":" + game_id)
-        return int(self._kv.get(key_authorized_money) or 0)
+        # Use the new method in SQLiteDB for authorized money
+        return self._kv.get_authorized_money(self.user_id, game_id)
 
     def authorize(self, game_id: str, amount: Money) -> None:
         """ Decrease count of money. """
@@ -699,19 +701,22 @@ class WalletManagerModel(Wallet):
 
     def authorize_all(self, game_id: str) -> Money:
         """ Decrease all money of player. """
-        money = int(self._kv.get(self._prefix(self.user_id)))
-        self.inc_authorized_money(game_id, money)
+        wallet = int(self._kv.get(self._prefix(self.user_id)).decode('utf-8'))
+        self.inc_authorized_money(game_id, wallet)
 
         self._kv.set(self._prefix(self.user_id), 0)
-        return money
+        return wallet
 
     def value(self) -> Money:
         """ Get count of money in the wallet. """
-        return int(self._kv.get(self._prefix(self.user_id)))
+        result = self._kv.get(self._prefix(self.user_id))
+        if result is None:
+            return DEFAULT_MONEY
+        return int(result.decode('utf-8'))
 
     def approve(self, game_id: str) -> None:
-        key_authorized_money = self._prefix(self.user_id, ":" + game_id)
-        self._kv.delete(key_authorized_money)
+        # Use the new method in SQLiteDB for authorized money
+        self._kv.delete_authorized_money(self.user_id, game_id)
 
 
 class RoundRateModel:
