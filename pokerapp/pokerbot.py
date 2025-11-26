@@ -4,22 +4,8 @@ import logging
 import threading
 import time
 import redis
-
+import telebot
 from typing import Callable
-from telegram import Bot
-from telegram.utils.request import Request
-from telegram.ext import Updater
-from telegram.error import (
-    TimedOut,
-    NetworkError,
-    RetryAfter,
-    BadRequest,
-    ChatMigrated,
-    Conflict,
-    InvalidToken,
-    TelegramError,
-    Unauthorized,
-)
 
 from pokerapp.config import Config
 from pokerapp.pokerbotcontrol import PokerBotCotroller
@@ -34,49 +20,13 @@ logging.basicConfig(
 )
 
 
-class PokerBot:
+class MessageDelayBot(telebot.TeleBot):
     def __init__(
         self,
         token: str,
-        cfg: Config,
-    ):
-        req = Request(con_pool_size=8)
-        bot = MessageDelayBot(token=token, request=req)
-        bot.run_tasks_manager()
-
-        self._updater = Updater(
-            bot=bot,
-            use_context=True,
-        )
-
-        kv = redis.Redis(
-            host=cfg.REDIS_HOST,
-            port=cfg.REDIS_PORT,
-            db=cfg.REDIS_DB,
-            password=cfg.REDIS_PASS if cfg.REDIS_PASS != "" else None
-        )
-
-        self._view = PokerBotViewer(bot=bot)
-        self._model = PokerBotModel(
-            view=self._view,
-            bot=bot,
-            kv=kv,
-            cfg=cfg,
-        )
-        self._controller = PokerBotCotroller(self._model, self._updater)
-
-    def run(self) -> None:
-        self._updater.start_polling()
-
-
-class MessageDelayBot(Bot):
-    def __init__(
-        self,
-        *args,
         tasks_delay=3,
-        **kwargs,
     ):
-        super(MessageDelayBot, self).__init__(*args, **kwargs)
+        super(MessageDelayBot, self).__init__(token=token)
 
         self._chat_tasks_lock = threading.Lock()
         self._tasks_delay = tasks_delay
@@ -86,7 +36,6 @@ class MessageDelayBot(Bot):
             target=self._tasks_manager_loop,
             args=(self._stop_chat_tasks, ),
         )
-        # TODO: Add @decorator to functions in view?
 
     def run_tasks_manager(self) -> None:
         self._chat_tasks_thread.start()
@@ -108,21 +57,8 @@ class MessageDelayBot(Bot):
 
             try:
                 task_callable()
-            except (
-                TimedOut,
-                NetworkError,
-                RetryAfter
-            ):
+            except Exception:
                 tasks.insert(0, task_callable)
-            except (
-                BadRequest,
-                ChatMigrated,
-                Conflict,
-                InvalidToken,
-                TelegramError,
-                Unauthorized,
-            ) as e:
-                logging.error(e)
             finally:
                 self._chat_tasks[chat_id]["last_time"] = now
 
@@ -151,21 +87,27 @@ class MessageDelayBot(Bot):
         finally:
             self._chat_tasks_lock.release()
 
-    def send_photo(self, *args, **kwargs) -> None:
+    def send_photo_delayed(self, *args, **kwargs) -> None:
+        chat_id = kwargs.get("chat_id", 0)
+        if chat_id == 0 and len(args) > 0:
+            chat_id = args[0]
         self._add_task(
-            chat_id=kwargs.get("chat_id", 0),
+            chat_id=chat_id,
             task=lambda:
                 super(MessageDelayBot, self).send_photo(*args, **kwargs),
         )
 
-    def send_message(self, *args, **kwargs) -> None:
+    def send_message_delayed(self, *args, **kwargs) -> None:
+        chat_id = kwargs.get("chat_id", 0)
+        if chat_id == 0 and len(args) > 0:
+            chat_id = args[0]
         self._add_task(
-            chat_id=kwargs.get("chat_id", 0),
+            chat_id=chat_id,
             task=lambda:
                 super(MessageDelayBot, self).send_message(*args, **kwargs),
         )
 
-    def edit_message_reply_markup(self, *args, **kwargs) -> None:
+    def edit_message_reply_markup_delayed(self, *args, **kwargs) -> None:
         def task():
             super(MessageDelayBot, self).edit_message_reply_markup(
                 *args,
@@ -174,21 +116,41 @@ class MessageDelayBot(Bot):
 
         try:
             task()
-        except (
-            TimedOut,
-            NetworkError,
-            RetryAfter
-        ):
+        except Exception:
+            chat_id = kwargs.get("chat_id", 0)
+            if chat_id == 0 and len(args) > 0:
+                # Try to extract chat_id from args if possible
+                chat_id = 0  # fallback value
             self._add_task(
-                chat_id=kwargs.get("chat_id", 0),
+                chat_id=chat_id,
                 task=task,
             )
-        except (
-            BadRequest,
-            ChatMigrated,
-            Conflict,
-            InvalidToken,
-            TelegramError,
-            Unauthorized,
-        ) as e:
-            logging.error(e)
+
+
+class PokerBot:
+    def __init__(
+        self,
+        token: str,
+        cfg: Config,
+    ):
+        self._bot = MessageDelayBot(token=token)
+        self._bot.run_tasks_manager()
+
+        kv = redis.Redis(
+            host=cfg.REDIS_HOST,
+            port=cfg.REDIS_PORT,
+            db=cfg.REDIS_DB,
+            password=cfg.REDIS_PASS if cfg.REDIS_PASS != "" else None
+        )
+
+        self._view = PokerBotViewer(bot=self._bot)
+        self._model = PokerBotModel(
+            view=self._view,
+            bot=self._bot,
+            kv=kv,
+            cfg=cfg,
+        )
+        self._controller = PokerBotCotroller(self._model, self._bot)
+
+    def run(self) -> None:
+        self._bot.polling(none_stop=True)

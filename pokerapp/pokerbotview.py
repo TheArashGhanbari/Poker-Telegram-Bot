@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 
-from telegram import (
+import telebot
+from telebot.types import (
     Message,
-    ParseMode,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    Bot,
     InputMediaPhoto,
 )
 from io import BytesIO
@@ -25,7 +24,7 @@ from pokerapp.entities import (
 
 
 class PokerBotViewer:
-    def __init__(self, bot: Bot):
+    def __init__(self, bot: telebot.TeleBot):
         self._bot = bot
         self._desk_generator = DeskImageGenerator()
 
@@ -35,23 +34,42 @@ class PokerBotViewer:
         text: str,
         reply_markup: ReplyKeyboardMarkup = None,
     ) -> None:
-        self._bot.send_message(
-            chat_id=chat_id,
-            parse_mode=ParseMode.MARKDOWN,
-            text=text,
-            reply_markup=reply_markup,
-            disable_notification=True,
-            disable_web_page_preview=True,
-        )
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'send_message_delayed'):
+            self._bot.send_message_delayed(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup,
+                disable_notification=True,
+            )
+        else:
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup,
+                disable_notification=True,
+            )
 
     def send_photo(self, chat_id: ChatId) -> None:
         # TODO: photo to args.
-        self._bot.send_photo(
-            chat_id=chat_id,
-            photo=open("./assets/poker_hand.jpg", 'rb'),
-            parse_mode=ParseMode.MARKDOWN,
-            disable_notification=True,
-        )
+        with open("./assets/poker_hand.jpg", 'rb') as photo:
+            # Use delayed method if available, otherwise use regular method
+            if hasattr(self._bot, 'send_photo_delayed'):
+                self._bot.send_photo_delayed(
+                    chat_id=chat_id,
+                    photo=photo,
+                    parse_mode='Markdown',
+                    disable_notification=True,
+                )
+            else:
+                self._bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo,
+                    parse_mode='Markdown',
+                    disable_notification=True,
+                )
 
     def send_dice_reply(
         self,
@@ -59,11 +77,12 @@ class PokerBotViewer:
         message_id: MessageId,
         emoji='🎲',
     ) -> Message:
+        # Telebot does support send_dice - no need for delayed version for dice
         return self._bot.send_dice(
-            reply_to_message_id=message_id,
             chat_id=chat_id,
-            disable_notification=True,
             emoji=emoji,
+            reply_to_message_id=int(message_id),  # Convert message_id to int
+            disable_notification=True,
         )
 
     def send_message_reply(
@@ -72,13 +91,23 @@ class PokerBotViewer:
         message_id: MessageId,
         text: str,
     ) -> None:
-        self._bot.send_message(
-            reply_to_message_id=message_id,
-            chat_id=chat_id,
-            parse_mode=ParseMode.MARKDOWN,
-            text=text,
-            disable_notification=True,
-        )
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'send_message_delayed'):
+            self._bot.send_message_delayed(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                reply_to_message_id=int(message_id),  # Convert message_id to int
+                disable_notification=True,
+            )
+        else:
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                reply_to_message_id=int(message_id),  # Convert message_id to int
+                disable_notification=True,
+            )
 
     def send_desk_cards_img(
         self,
@@ -86,22 +115,29 @@ class PokerBotViewer:
         cards: Cards,
         caption: str = "",
         disable_notification: bool = True,
-    ) -> MessageId:
+    ) -> int:
         im_cards = self._desk_generator.generate_desk(cards)
         bio = BytesIO()
         bio.name = 'desk.png'
         im_cards.save(bio, 'PNG')
         bio.seek(0)
-        return self._bot.send_media_group(
-            chat_id=chat_id,
-            media=[
-                InputMediaPhoto(
-                    media=bio,
-                    caption=caption,
-                ),
-            ],
-            disable_notification=disable_notification,
-        )[0]
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'send_photo_delayed'):
+            # For sending an image instead of media group using delayed method
+            msg = self._bot.send_photo_delayed(
+                chat_id=chat_id,
+                photo=bio,
+                caption=caption,
+                disable_notification=disable_notification
+            )
+        else:
+            msg = self._bot.send_photo(
+                chat_id=chat_id,
+                photo=bio,
+                caption=caption,
+                disable_notification=disable_notification
+            )
+        return msg.message_id
 
     @ staticmethod
     def _get_cards_markup(cards: Cards) -> ReplyKeyboardMarkup:
@@ -144,7 +180,7 @@ class PokerBotViewer:
         ]]
 
         return InlineKeyboardMarkup(
-            inline_keyboard=keyboard
+            keyboard=keyboard  # In telebot, the parameter is 'keyboard', not 'inline_keyboard'
         )
 
     def send_cards(
@@ -155,14 +191,25 @@ class PokerBotViewer:
             ready_message_id: str,
     ) -> None:
         markup = PokerBotViewer._get_cards_markup(cards)
-        self._bot.send_message(
-            chat_id=chat_id,
-            text="Showing cards to " + mention_markdown,
-            reply_markup=markup,
-            reply_to_message_id=ready_message_id,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_notification=True,
-        )
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'send_message_delayed'):
+            self._bot.send_message_delayed(
+                chat_id=chat_id,
+                text="Showing cards to " + mention_markdown,
+                reply_markup=markup,
+                reply_to_message_id=int(ready_message_id),
+                parse_mode='Markdown',
+                disable_notification=True,
+            )
+        else:
+            self._bot.send_message(
+                chat_id=chat_id,
+                text="Showing cards to " + mention_markdown,
+                reply_markup=markup,
+                reply_to_message_id=int(ready_message_id),
+                parse_mode='Markdown',
+                disable_notification=True,
+            )
 
     @ staticmethod
     def define_check_call_action(
@@ -199,30 +246,48 @@ class PokerBotViewer:
             game, player
         )
         markup = PokerBotViewer._get_turns_markup(check_call_action)
-        self._bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=markup,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_notification=True,
-        )
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'send_message_delayed'):
+            self._bot.send_message_delayed(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode='Markdown',
+                disable_notification=True,
+            )
+        else:
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode='Markdown',
+                disable_notification=True,
+            )
 
     def remove_markup(
         self,
         chat_id: ChatId,
         message_id: MessageId,
     ) -> None:
-        self._bot.edit_message_reply_markup(
-            chat_id=chat_id,
-            message_id=message_id,
-        )
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'edit_message_reply_markup_delayed'):
+            self._bot.edit_message_reply_markup_delayed(
+                chat_id=chat_id,
+                message_id=int(message_id),
+            )
+        else:
+            self._bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=int(message_id),
+            )
 
     def remove_message(
         self,
         chat_id: ChatId,
         message_id: MessageId,
     ) -> None:
+        # Use regular delete_message method (no delayed version needed for this)
         self._bot.delete_message(
             chat_id=chat_id,
-            message_id=message_id,
+            message_id=int(message_id),
         )

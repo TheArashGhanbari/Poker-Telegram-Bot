@@ -11,7 +11,7 @@ def main() -> None:
     cfg: Config = Config()
 
     if cfg.TOKEN == "":
-        print("Environment varaible POKERBOT_TOKEN is not set")
+        print("Environment variable POKERBOT_TOKEN is not set")
         exit(1)
 
     bot = PokerBot(token=cfg.TOKEN, cfg=cfg)

@@ -1,4 +1,4 @@
-python-telegram-bot
+pyTelegramBotAPI
 flake8
 pillow
 PySocks
