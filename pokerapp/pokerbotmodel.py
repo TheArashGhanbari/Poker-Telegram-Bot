@@ -202,13 +202,9 @@ class PokerBotModel:
     ) -> None:
         print(f"new game: {game.id}, players count: {len(game.players)}")
 
-        markup = ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add("poker")
-
         self._view.send_message(
             chat_id=chat_id,
             text='بازی شروع شد! 🃏',
-            reply_markup=markup,
         )
 
         game.state = GameState.ROUND_PRE_FLOP
