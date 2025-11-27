@@ -2,7 +2,7 @@
 
 import logging
 import telebot
-from pokerapp.entities import PlayerAction
+from pokerapp.entities import PlayerAction, GameState, PlayerState
 from pokerapp.pokerbotmodel import PokerBotModel
 from pokerapp.privatechatmodel import UserPrivateChatModel
 from pokerapp.db import SQLiteDB
@@ -51,7 +51,8 @@ class PokerBotCotroller:
                     return
 
                 # For group chats, check if the user is an admin to determine the behavior
-                is_admin = self._model._check_access(str(message.chat.id), str(message.from_user.id))
+                is_admin = self._model._check_access(
+                    str(message.chat.id), str(message.from_user.id))
                 if is_admin:
                     # If admin, send the game menu
                     self._model.send_game_menu(message)
@@ -99,15 +100,27 @@ class PokerBotCotroller:
                 self._bot.send_message(
                     message.chat.id, "خطایی در پردازش دستور کارت‌ها رخ داد. لطفا دوباره امتحان کنید.")
 
+        @bot.message_handler(commands=['tournament'])
+        def tournament_handler(message):
+            try:
+                self._handle_tournament(message)
+            except Exception as e:
+                logger.error(
+                    f"Error in tournament_handler: {e}", exc_info=True)
+                self._bot.send_message(
+                    message.chat.id, "خطایی در پردازش دستور تورنمنت رخ داد. لطفا دوباره امتحان کنید.")
+
         @bot.callback_query_handler(func=lambda call: True)
         def button_click_handler(call):
             try:
                 query_data = call.data
                 # For game action buttons (CHECK, CALL, FOLD, RAISE, etc.), use middleware to check turns
                 if query_data in [PlayerAction.CHECK.value, PlayerAction.CALL.value,
-                                PlayerAction.FOLD.value, str(PlayerAction.SMALL.value),
-                                str(PlayerAction.NORMAL.value), str(PlayerAction.BIG.value),
-                                PlayerAction.ALL_IN.value]:
+                                  PlayerAction.FOLD.value, str(
+                                      PlayerAction.SMALL.value),
+                                  str(PlayerAction.NORMAL.value), str(
+                                      PlayerAction.BIG.value),
+                                  PlayerAction.ALL_IN.value]:
                     self._model.middleware_user_turn_telebot(
                         self._handle_button_clicked,
                         call
@@ -140,13 +153,17 @@ class PokerBotCotroller:
     def _handle_money(self, message) -> None:
         self._model.bonus(message)
 
+    def _handle_tournament(self, message) -> None:
+        self._model.create_tournament(message)
+
     def _handle_button_clicked(self, call) -> None:
         query_data = call.data
         if query_data == "ready":
             self._model.handle_ready_button(call)
         elif query_data == "start_game":
             # Only allow admin to start the game
-            is_admin = self._model._check_access(str(call.message.chat.id), str(call.from_user.id))
+            is_admin = self._model._check_access(
+                str(call.message.chat.id), str(call.from_user.id))
             if is_admin:
                 self._model.start_game_from_menu(call)
             else:
@@ -157,6 +174,58 @@ class PokerBotCotroller:
         elif query_data == "show_players":
             # This is just a display button, do nothing
             pass
+        elif query_data == "show_stats":
+            self._model.show_player_stats(call)
+        elif query_data == "show_leaderboard":
+            self._model.show_leaderboard(call)
+        elif query_data == "show_balance":
+            self._model.show_balance(call)
+        elif query_data == "create_tournament":
+            # Only allow admin to create tournament
+            chat_id = str(call.message.chat.id)
+            user_id = str(call.from_user.id)
+            is_admin = self._model._check_access(chat_id, user_id)
+            if is_admin:
+                self._model.create_tournament_from_call(call)
+            else:
+                self._bot.answer_callback_query(
+                    call.id,
+                    text="فقط ادمین می‌تواند تورنمنت ایجاد کند"
+                )
+        elif query_data == "show_game_status":
+            # Show current game status
+            game = self._model._get_or_create_game(str(call.message.chat.id))
+            if game.state != GameState.INITIAL and game.state != GameState.FINISHED:
+                # Show active game status
+                player_count = len(game.players)
+                pot_amount = game.pot
+                round_name = {
+                    GameState.ROUND_PRE_FLOP: "قبل از فلپ",
+                    GameState.ROUND_FLOP: "فلپ",
+                    GameState.ROUND_TURN: "ترن",
+                    GameState.ROUND_RIVER: "ریور"
+                }.get(game.state, "ناشناخته")
+
+                status_text = f"🎮 وضعیت بازی:\n"
+                status_text += f"• مرحله: {round_name}\n"
+                status_text += f"• تعداد بازیکنان: {player_count}\n"
+                status_text += f"• پات: {pot_amount}$\n"
+
+                active_players = game.active_players()
+                status_text += f"• بازیکنان فعال: {len(active_players)}\n"
+
+                if game.cards_table:
+                    status_text += f"• کارت‌های جامعه: {' '.join(game.cards_table)}\n"
+
+                self._bot.answer_callback_query(
+                    call.id,
+                    text=status_text
+                )
+            else:
+                self._bot.answer_callback_query(
+                    call.id,
+                    text="هیچ بازی فعالی وجود ندارد"
+                )
         elif query_data == PlayerAction.CHECK.value:
             self._model.call_check(call)
         elif query_data == PlayerAction.CALL.value:

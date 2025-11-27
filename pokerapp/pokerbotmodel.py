@@ -28,6 +28,12 @@ from pokerapp.entities import (
     Score,
     Wallet,
 )
+from pokerapp.improved_entities import (
+    PlayerStats,
+    GameType
+)
+from pokerapp.gamestatsmodel import GameStatsModel
+from pokerapp.tournamentmanager import TournamentManager
 from pokerapp.pokerbotview import PokerBotViewer
 
 
@@ -61,7 +67,10 @@ class PokerBotModel:
         self._winner_determine: WinnerDetermination = WinnerDetermination()
         self._kv: SQLiteDB = kv
         self._cfg: Config = cfg
-        self._round_rate: RoundRateModel = RoundRateModel()
+        self._stats_model: GameStatsModel = GameStatsModel(cfg.DB_PATH)
+        self._round_rate: RoundRateModel = RoundRateModel(
+            kv=self._kv, stats_model=self._stats_model)
+        self._tournament_manager: TournamentManager = TournamentManager()
 
         self._readyMessages = {}
 
@@ -84,117 +93,130 @@ class PokerBotModel:
         return game.players[i]
 
     def ready(self, message: Message) -> None:
-        game = self._get_or_create_game(str(message.chat.id))
-        chat_id = str(message.chat.id)
+        try:
+            game = self._get_or_create_game(str(message.chat.id))
+            chat_id = str(message.chat.id)
 
-        if game.state != GameState.INITIAL:
-            self._view.send_message_reply(
-                chat_id=chat_id,
-                message_id=message.message_id,
-                text="بازی شروع شده. صبر کنید!"
+            if game.state != GameState.INITIAL:
+                self._view.send_message_reply(
+                    chat_id=chat_id,
+                    message_id=message.message_id,
+                    text="بازی شروع شده. صبر کنید!"
+                )
+                return
+
+            if len(game.players) >= MAX_PLAYERS:  # Use >= instead of >
+                self._view.send_message_reply(
+                    chat_id=chat_id,
+                    text="اتاق پر است",
+                    message_id=message.message_id,
+                )
+                return
+
+            user = message.from_user
+
+            # Check if user has started private chat with bot
+            user_chat_model = UserPrivateChatModel(
+                user_id=str(user.id),
+                kv=self._kv,
             )
-            return
+            private_chat_id = user_chat_model.get_chat_id()
+            if private_chat_id is None:
+                self._view.send_message_reply(
+                    chat_id=chat_id,
+                    message_id=message.message_id,
+                    text="لطفا ابتدا ربات را در چت خصوصی خود استارت کنید تا کارت‌های شما به صورت خصوصی ارسال شود. سپس دوباره /ready را امتحان کنید.",
+                )
+                return
 
-        if len(game.players) > MAX_PLAYERS:
-            self._view.send_message_reply(
-                chat_id=chat_id,
-                text="اتاق پر است",
-                message_id=message.message_id,
-            )
-            return
+            if user.id in game.ready_users:
+                self._view.send_message_reply(
+                    chat_id=chat_id,
+                    message_id=message.message_id,
+                    text="شما قبلا آماده هستید",
+                )
+                return
 
-        user = message.from_user
-
-        # Check if user has started private chat with bot
-        user_chat_model = UserPrivateChatModel(
-            user_id=str(user.id),
-            kv=self._kv,
-        )
-        private_chat_id = user_chat_model.get_chat_id()
-        if private_chat_id is None:
-            self._view.send_message_reply(
-                chat_id=chat_id,
-                message_id=message.message_id,
-                text="لطفا ابتدا ربات را در چت خصوصی خود استارت کنید تا کارت‌های شما به صورت خصوصی ارسال شود. سپس دوباره /ready را امتحان کنید.",
-            )
-            return
-
-        if user.id in game.ready_users:
-            self._view.send_message_reply(
-                chat_id=chat_id,
-                message_id=message.message_id,
-                text="شما قبلا آماده هستید",
-            )
-            return
-
-        player = Player(
-            user_id=str(user.id),
-            mention_markdown=f"[{user.first_name}](tg://user?id={user.id})",
-            wallet=WalletManagerModel(str(user.id), self._kv),
-            ready_message_id=str(message.message_id),
-        )
-
-        if player.wallet.value() < 2*SMALL_BLIND:
-            return self._view.send_message_reply(
-                chat_id=chat_id,
-                message_id=message.message_id,
-                text="شما پول کافی ندارید",
+            player = Player(
+                user_id=str(user.id),
+                mention_markdown=f"[{user.first_name}](tg://user?id={user.id})",
+                wallet=WalletManagerModel(str(user.id), self._kv),
+                ready_message_id=str(message.message_id),
             )
 
-        game.ready_users.add(str(user.id))
+            if player.wallet.value() < 2*SMALL_BLIND:
+                return self._view.send_message_reply(
+                    chat_id=chat_id,
+                    message_id=message.message_id,
+                    text=f"💰 شما پول کافی ندارید (حداقل {SMALL_BLIND*2}$)",
+                )
 
-        game.players.append(player)
+            game.ready_users.add(str(user.id))
+            game.players.append(player)
 
-        chat_members = self._bot.get_chat_members_count(chat_id)
-        players_active = len(game.players)
-        # One is the bot.
-        if players_active == chat_members - 1 and \
-                players_active >= self._min_players:
-            self._start_game(game=game, chat_id=chat_id)
+            chat_members = self._bot.get_chat_members_count(chat_id)
+            players_active = len(game.players)
+            # One is the bot.
+            if players_active >= self._min_players and players_active == chat_members - 1:
+                self._start_game(game=game, chat_id=chat_id)
+        except Exception as e:
+            logging.error(f"Error in ready: {e}", exc_info=True)
+            chat_id = str(message.chat.id)
+            self._view.send_message(
+                chat_id=chat_id,
+                text="❌ خطایی در پردازش دستور آماده رخ داد. لطفا دوباره امتحان کنید."
+            )
 
     def stop(self, user_id: UserId) -> None:
         UserPrivateChatModel(user_id=user_id, kv=self._kv).delete()
 
     def start(self, message: Message) -> None:
-        game = self._get_or_create_game(str(message.chat.id))
-        chat_id = str(message.chat.id)
-        user_id = str(message.from_user.id)
+        try:
+            game = self._get_or_create_game(str(message.chat.id))
+            chat_id = str(message.chat.id)
+            user_id = str(message.from_user.id)
 
-        if game.state not in (GameState.INITIAL, GameState.FINISHED):
-            self._view.send_message(
-                chat_id=chat_id,
-                text="بازی در حال انجام است"
-            )
-            return
+            if game.state not in (GameState.INITIAL, GameState.FINISHED):
+                self._view.send_message(
+                    chat_id=chat_id,
+                    text="🎮 بازی در حال انجام است"
+                )
+                return
 
-        # One is the bot.
-        chat_members = self._bot.get_chat_members_count(chat_id) - 1
-        if chat_members == 1:
-            with open(DESCRIPTION_FILE, 'r', encoding='utf-8') as f:
-                text = f.read()
+            # One is the bot.
+            chat_members = self._bot.get_chat_members_count(chat_id) - 1
+            if chat_members == 1:
+                with open(DESCRIPTION_FILE, 'r', encoding='utf-8') as f:
+                    text = f.read()
 
+                chat_id = str(message.chat.id)
+                self._view.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                )
+                self._view.send_photo(chat_id=chat_id)
+
+                if message.chat.type == 'private':
+                    UserPrivateChatModel(user_id=user_id, kv=self._kv) \
+                        .set_chat_id(chat_id=chat_id)
+
+                return
+
+            players_active = len(game.players)
+            if players_active >= self._min_players:
+                self._start_game(game=game, chat_id=chat_id)
+            else:
+                self._view.send_message(
+                    chat_id=chat_id,
+                    text="👥 بازیکن کافی وجود ندارد"
+                )
+        except Exception as e:
+            logging.error(f"Error in start: {e}", exc_info=True)
             chat_id = str(message.chat.id)
             self._view.send_message(
                 chat_id=chat_id,
-                text=text,
+                text="❌ خطایی در پردازش دستور شروع رخ داد. لطفا دوباره امتحان کنید."
             )
-            self._view.send_photo(chat_id=chat_id)
-
-            if message.chat.type == 'private':
-                UserPrivateChatModel(user_id=user_id, kv=self._kv) \
-                    .set_chat_id(chat_id=chat_id)
-
-            return
-
-        players_active = len(game.players)
-        if players_active >= self._min_players:
-            self._start_game(game=game, chat_id=chat_id)
-        else:
-            self._view.send_message(
-                chat_id=chat_id,
-                text="بازیکن کافی وجود ندارد"
-            )
-        return
 
     def _start_game(
         self,
@@ -217,53 +239,64 @@ class PokerBotModel:
         self._round_rate.round_pre_flop_rate_after_first_turn(game)
 
     def bonus(self, message: Message) -> None:
-        wallet = WalletManagerModel(
-            str(message.from_user.id), self._kv)
-        money = wallet.value()
+        try:
+            wallet = WalletManagerModel(
+                str(message.from_user.id), self._kv)
+            money = wallet.value()
 
-        chat_id = str(message.chat.id)
-        message_id = message.message_id
+            chat_id = str(message.chat.id)
+            message_id = message.message_id
 
-        if wallet.has_daily_bonus():
-            return self._view.send_message_reply(
+            if wallet.has_daily_bonus():
+                return self._view.send_message_reply(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=f"شما امروز قبلاً جایزه را دریافت کرده‌اید\n💰 موجودی: *{money}$*",
+                )
+
+            icon: str
+            dice_msg: Message
+            bonus: Money
+
+            SATURDAY = 5
+            if datetime.datetime.today().weekday() == SATURDAY:
+                dice_msg = self._view.send_dice_reply(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    emoji='🎰'
+                )
+                icon = '🎰'
+                bonus = dice_msg.dice.value * 20
+            else:
+                dice_msg = self._view.send_dice_reply(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+                icon = DICES[dice_msg.dice.value-1]
+                bonus = BONUSES[dice_msg.dice.value - 1]
+
+            message_id = dice_msg.message_id
+            money = wallet.add_daily(amount=bonus)
+
+            def print_bonus() -> None:
+                try:
+                    self._view.send_message_reply(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=f"🎉 جایزه: *{bonus}$* {icon}\n" +
+                        f"💰 موجودی: *{money}$*",
+                    )
+                except Exception as e:
+                    logging.error(f"Error in print_bonus: {e}", exc_info=True)
+
+            Timer(DICE_DELAY_SEC, print_bonus).start()
+        except Exception as e:
+            logging.error(f"Error in bonus: {e}", exc_info=True)
+            chat_id = str(message.chat.id)
+            self._view.send_message(
                 chat_id=chat_id,
-                message_id=message_id,
-                text=f"پول شما: *{money}$*\n",
+                text="❌ خطایی در دریافت جایزه رخ داد. لطفا دوباره امتحان کنید."
             )
-
-        icon: str
-        dice_msg: Message
-        bonus: Money
-
-        SATURDAY = 5
-        if datetime.datetime.today().weekday() == SATURDAY:
-            dice_msg = self._view.send_dice_reply(
-                chat_id=chat_id,
-                message_id=message_id,
-                emoji='🎰'
-            )
-            icon = '🎰'
-            bonus = dice_msg.dice.value * 20
-        else:
-            dice_msg = self._view.send_dice_reply(
-                chat_id=chat_id,
-                message_id=message_id,
-            )
-            icon = DICES[dice_msg.dice.value-1]
-            bonus = BONUSES[dice_msg.dice.value - 1]
-
-        message_id = dice_msg.message_id
-        money = wallet.add_daily(amount=bonus)
-
-        def print_bonus() -> None:
-            self._view.send_message_reply(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=f"جایزه: *{bonus}$* {icon}\n" +
-                f"پول شما: *{money}$*\n",
-            )
-
-        Timer(DICE_DELAY_SEC, print_bonus).start()
 
     def send_cards_to_user(
         self,
@@ -322,23 +355,30 @@ class PokerBotModel:
         players_list_text = ""
         if game.players:
             # Sort players alphabetically by name
-            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
+            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(
+                1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
 
             players_list_text = f"✓ بازیکنان ({len(game.players)}):\n"
             for player in sorted_players:
                 # Extract just the name from the mention markdown
                 # Extract name from markdown mention [name](tg://user?id=1234)
-                name_match = re.search(r'\[([^\]]+)\]', player.mention_markdown)
-                player_name = name_match.group(1) if name_match else player.mention_markdown
+                name_match = re.search(
+                    r'\[([^\]]+)\]', player.mention_markdown)
+                player_name = name_match.group(
+                    1) if name_match else player.mention_markdown
                 players_list_text += f"• {player_name}\n"
         else:
             players_list_text = "✓ هیچ بازیکنی آماده نیست\n"
 
         # Determine if start game button should be enabled
-        start_game_enabled = is_admin and len(game.players) >= self._min_players
+        start_game_enabled = is_admin and len(
+            game.players) >= self._min_players
 
         # Create markup without players list (players shown in message text)
-        markup = self._view._get_game_menu_markup(start_game_enabled)
+        game_state_str = game.state.value if hasattr(
+            game.state, 'value') else 'initial'
+        markup = self._view._get_game_menu_markup(
+            start_game_enabled, game_state_str)
 
         # Send the game menu message with player list
         sent_message = self._bot.send_message(
@@ -435,14 +475,17 @@ class PokerBotModel:
         players_list_text = ""
         if game.players:
             # Sort players alphabetically by name
-            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
+            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(
+                1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
 
             players_list_text = f"✓ بازیکنان ({len(game.players)}):\n"
             for player in sorted_players:
                 # Extract just the name from the mention markdown
                 # Extract name from markdown mention [name](tg://user?id=1234)
-                name_match = re.search(r'\[([^\]]+)\]', player.mention_markdown)
-                player_name = name_match.group(1) if name_match else player.mention_markdown
+                name_match = re.search(
+                    r'\[([^\]]+)\]', player.mention_markdown)
+                player_name = name_match.group(
+                    1) if name_match else player.mention_markdown
                 players_list_text += f"• {player_name}\n"
         else:
             players_list_text = "✓ هیچ بازیکنی آماده نیست\n"
@@ -453,7 +496,10 @@ class PokerBotModel:
         start_game_enabled = len(game.players) >= self._min_players
 
         # Create markup without players list (players shown in message text)
-        markup = self._view._get_game_menu_markup(start_game_enabled)
+        game_state_str = game.state.value if hasattr(
+            game.state, 'value') else 'initial'
+        markup = self._view._get_game_menu_markup(
+            start_game_enabled, game_state_str)
 
         # Edit the existing message
         try:
@@ -478,14 +524,17 @@ class PokerBotModel:
         players_list_text = ""
         if game.players:
             # Sort players alphabetically by name
-            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
+            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(
+                1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
 
             players_list_text = f"✓ بازیکنان ({len(game.players)}):\n"
             for player in sorted_players:
                 # Extract just the name from the mention markdown
                 # Extract name from markdown mention [name](tg://user?id=1234)
-                name_match = re.search(r'\[([^\]]+)\]', player.mention_markdown)
-                player_name = name_match.group(1) if name_match else player.mention_markdown
+                name_match = re.search(
+                    r'\[([^\]]+)\]', player.mention_markdown)
+                player_name = name_match.group(
+                    1) if name_match else player.mention_markdown
                 players_list_text += f"• {player_name}\n"
         else:
             players_list_text = "✓ هیچ بازیکنی آماده نیست\n"
@@ -494,7 +543,10 @@ class PokerBotModel:
         start_game_enabled = len(game.players) >= self._min_players
 
         # Create markup without players list (players shown in message text)
-        markup = self._view._get_game_menu_markup(start_game_enabled)
+        game_state_str = game.state.value if hasattr(
+            game.state, 'value') else 'initial'
+        markup = self._view._get_game_menu_markup(
+            start_game_enabled, game_state_str)
 
         # Send the game menu message
         sent_message = self._bot.send_message(
@@ -688,27 +740,61 @@ class PokerBotModel:
         )
 
         only_one_player = len(active_players) == 1
-        text = "بازی با نتیجه زیر تمام شد:\n\n"
-        for (player, best_hand, money) in winners_hand_money:
-            win_hand = " ".join(best_hand)
-            text += (
-                f"{player.mention_markdown}:\n" +
-                f"دریافت کرد: *{money} $*\n"
-            )
-            if not only_one_player:
-                text += (
-                    "با ترکیب کارت‌های:\n" +
-                    f"{win_hand}\n\n"
-                )
 
-        # Send the game results
-        self._view.send_message(chat_id=chat_id, text=text)
+        # Send professional game results
+        self._view.send_game_results(
+            chat_id=chat_id,
+            winners_hand_money=winners_hand_money,
+            only_one_player=only_one_player,
+            cards_table=game.cards_table,
+            pot=game.pot
+        )
+
+        # Update player statistics
+        for player in game.players:
+            # Increment games played for all players
+            self._stats_model.increment_stat(
+                player.user_id, 'total_games_played', 1)
+
+            # For winners, update win statistics
+            for (winner_player, best_hand, money) in winners_hand_money:
+                if player.user_id == winner_player.user_id:
+                    self._stats_model.increment_stat(
+                        player.user_id, 'total_games_won', 1)
+                    self._stats_model.increment_stat(
+                        player.user_id, 'total_money_earned', money)
+
+                    # Record the best hand won
+                    hand_type = self._get_hand_type_description(best_hand)
+                    self._stats_model.update_best_hand(
+                        player.user_id, hand_type)
+                else:
+                    # For losers, reset winning streak
+                    self._stats_model.reset_winning_streak(player.user_id)
+
+        # Record game in history
+        end_time = datetime.datetime.now()
+        winner_user_ids = [winner[0].user_id for winner in winners_hand_money]
+        winner_id = winner_user_ids[0] if winner_user_ids else None
+
+        self._stats_model.record_game(
+            game_id=game.id,
+            chat_id=chat_id,
+            start_time=game.created_at,
+            end_time=end_time,
+            winner_user_id=winner_id,
+            pot_amount=game.pot,
+            players_count=len(game.players),
+            game_type=game.game_type.value
+        )
 
         # Reset the game but preserve the menu message ID so we can update the menu
         old_menu_message_id = game.menu_message_id
-        old_players = game.players[:]  # Keep a copy of the old players to calculate who won
+        # Keep a copy of the old players to calculate who won
+        old_players = game.players[:]
         game.reset()
-        game.menu_message_id = old_menu_message_id  # Restore the menu message ID for the new game state
+        # Restore the menu message ID for the new game state
+        game.menu_message_id = old_menu_message_id
 
         # Refresh the game menu to show the current state (no players yet for new game)
         try:
@@ -720,6 +806,44 @@ class PokerBotModel:
             except:
                 # If everything fails, at least the game is reset
                 pass
+
+    def _get_hand_type_description(self, best_hand) -> str:
+        """Convert best hand to a human-readable description"""
+        # This needs to be implemented based on the winner determination logic
+        # For now, we'll return a basic description based on hand evaluation
+        hand_values = [card.value for card in best_hand]
+        hand_suits = [card.suit for card in best_hand]
+
+        # Simple heuristics for hand type (this could be improved with the full winner determination logic)
+        if len(set(hand_suits)) == 1:
+            if set(hand_values) == {10, 11, 12, 13, 14}:
+                return "Royal Flush"
+            elif len(set([v - hand_values[i-1] for i, v in enumerate(hand_values[1:])])) == 1:
+                return "Straight Flush"
+            else:
+                return "Flush"
+        elif len(set(hand_values)) == 2:
+            # Either four of a kind or full house
+            value_counts = {}
+            for v in hand_values:
+                value_counts[v] = value_counts.get(v, 0) + 1
+            if 4 in value_counts.values():
+                return "Four of a Kind"
+            else:
+                return "Full House"
+        elif len(set([v - hand_values[i-1] for i, v in enumerate(hand_values[1:])])) == 1:
+            return "Straight"
+        elif 3 in [hand_values.count(v) for v in set(hand_values)]:
+            return "Three of a Kind"
+        elif 2 in [hand_values.count(v) for v in set(hand_values)]:
+            pair_count = len([v for v in set(hand_values)
+                             if hand_values.count(v) == 2])
+            if pair_count == 2:
+                return "Two Pair"
+            else:
+                return "Pair"
+        else:
+            return "High Card"
 
     def _goto_next_round(self, game: Game, chat_id: ChatId) -> bool:
         # The state of the last player becomes ALL_IN at end of the round .
@@ -814,6 +938,10 @@ class PokerBotModel:
 
                 player.state = PlayerState.FOLD
 
+                # Update player statistics
+                self._stats_model.increment_stat(
+                    player.user_id, 'total_folded', 1)
+
                 self._view.send_message(
                     chat_id=chat_id,
                     text=f"{player.mention_markdown} {PlayerAction.FOLD.value}"
@@ -843,6 +971,13 @@ class PokerBotModel:
             action = PlayerAction.CALL.value
             if player.round_rate == game.max_round_rate:
                 action = PlayerAction.CHECK.value
+                # Update check statistics
+                self._stats_model.increment_stat(
+                    player.user_id, 'total_checked', 1)
+            else:
+                # Update call statistics
+                self._stats_model.increment_stat(
+                    player.user_id, 'total_called', 1)
 
             try:
                 amount = game.max_round_rate - player.round_rate
@@ -885,6 +1020,9 @@ class PokerBotModel:
             if player.wallet.value() < raise_bet_rate.value:
                 return self.all_in(call)
 
+            # Update raise statistics
+            self._stats_model.increment_stat(player.user_id, 'total_raised', 1)
+
             self._view.send_message(
                 chat_id=chat_id,
                 text=player.mention_markdown +
@@ -909,6 +1047,10 @@ class PokerBotModel:
             player = self._current_turn_player(game)
             mention = player.mention_markdown
             amount = self._round_rate.all_in(game, player)
+
+            # Update player statistics (we can consider all-in as a type of raise)
+            self._stats_model.increment_stat(player.user_id, 'total_raised', 1)
+
             self._view.send_message(
                 chat_id=chat_id,
                 text=f"{mention} {PlayerAction.ALL_IN.value} {amount}$"
@@ -917,6 +1059,122 @@ class PokerBotModel:
             self._process_playing(chat_id=chat_id, game=game)
         except Exception as e:
             logging.error(f"Error in all_in: {e}", exc_info=True)
+
+    def show_balance(self, call) -> None:
+        """Show the balance of the user who clicked the button"""
+        try:
+            user_id = str(call.from_user.id)
+            chat_id = str(call.message.chat.id)
+
+            # Get the user's wallet
+            wallet = WalletManagerModel(user_id, self._kv)
+            balance = wallet.value()
+
+            # Send balance info in a user-friendly way
+            self._bot.answer_callback_query(
+                call.id,
+                text=f"💰 موجودی شما: {balance}$",
+                show_alert=False
+            )
+        except Exception as e:
+            logging.error(f"Error in show_balance: {e}", exc_info=True)
+            # Send error message silently
+            self._bot.answer_callback_query(
+                call.id,
+                text="❌ خطا در دریافت موجودی",
+                show_alert=False
+            )
+
+    def show_leaderboard(self, call) -> None:
+        """Show the top players based on their win statistics"""
+        try:
+            chat_id = str(call.message.chat.id)
+
+            # Get top players from the stats model
+            top_players = self._stats_model.get_top_players(limit=5)
+
+            if not top_players:
+                self._bot.answer_callback_query(
+                    call.id,
+                    text="هیچ بازیکنی در لیدربرد وجود ندارد",
+                    show_alert=False
+                )
+                return
+
+            # Format the leaderboard text
+            leaderboard_text = "🏆 لیدربرد:\n"
+            for i, player in enumerate(top_players, 1):
+                user_id = player['user_id']
+                wins = player['total_games_won']
+                total_games = player['total_games_played']
+                win_rate = player['win_rate']
+
+                # Get the user's name using the bot API
+                try:
+                    user = self._bot.get_chat_member(chat_id, user_id).user
+                    username = user.first_name
+                except:
+                    # If we can't get the user info, just show user_id
+                    username = f"Player {user_id}"
+
+                leaderboard_text += f"{i}. {username}: {wins} برد / {total_games} بازی ({win_rate:.1f}%)\n"
+
+            self._bot.answer_callback_query(
+                call.id,
+                text=leaderboard_text,
+                show_alert=False
+            )
+        except Exception as e:
+            logging.error(f"Error in show_leaderboard: {e}", exc_info=True)
+            self._bot.answer_callback_query(
+                call.id,
+                text="❌ خطا در دریافت لیدربرد",
+                show_alert=False
+            )
+
+    def show_player_stats(self, call) -> None:
+        """Show the statistics of the user who clicked the button"""
+        try:
+            user_id = str(call.from_user.id)
+            chat_id = str(call.message.chat.id)
+
+            # Get the user's stats
+            stats = self._stats_model.get_player_stats(user_id)
+
+            # Format the stats text
+            stats_text = f"📊 آمار بازیکن:\n"
+            stats_text += f"• تعداد بازی‌ها: {stats.total_games_played}\n"
+            stats_text += f"• تعداد برد: {stats.total_games_won}\n"
+            stats_text += f"• تعداد باخت: {stats.total_games_played - stats.total_games_won}\n"
+            stats_text += f"• میزان پول کسب شده: {stats.total_money_earned}$\n"
+            stats_text += f"• تعداد فولد: {stats.total_folded}\n"
+            stats_text += f"• تعداد ریز: {stats.total_raised}\n"
+            stats_text += f"• تعداد چک: {stats.total_checked}\n"
+            stats_text += f"• تعداد کال: {stats.total_called}\n"
+
+            if stats.best_hand_won:
+                stats_text += f"• بهترین دست برنده: {stats.best_hand_won}\n"
+
+            if stats.current_winning_streak > 0:
+                stats_text += f"• رشته برد فعلی: {stats.current_winning_streak}\n"
+
+            # Calculate win rate
+            if stats.total_games_played > 0:
+                win_rate = (stats.total_games_won / stats.total_games_played) * 100
+                stats_text += f"• درصد برد: {win_rate:.1f}%\n"
+
+            self._bot.answer_callback_query(
+                call.id,
+                text=stats_text,
+                show_alert=False
+            )
+        except Exception as e:
+            logging.error(f"Error in show_player_stats: {e}", exc_info=True)
+            self._bot.answer_callback_query(
+                call.id,
+                text="❌ خطا در دریافت آمار بازیکن",
+                show_alert=False
+            )
 
 
 class WalletManagerModel(Wallet):
@@ -1009,6 +1267,9 @@ class WalletManagerModel(Wallet):
 
 
 class RoundRateModel:
+    def __init__(self, kv: SQLiteDB, stats_model: GameStatsModel):
+        self._kv = kv
+        self._stats_model = stats_model
 
     def round_pre_flop_rate_before_first_turn(self, game: Game) -> None:
         self.raise_rate_bet(game, game.players[0], SMALL_BLIND)

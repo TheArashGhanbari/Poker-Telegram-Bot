@@ -21,6 +21,7 @@ from pokerapp.entities import (
     Mention,
     Money,
 )
+from pokerapp.improved_entities import PlayerStats
 
 
 class PokerBotViewer:
@@ -154,15 +155,15 @@ class PokerBotViewer:
             ),
         ], [
             InlineKeyboardButton(
-                text=str(PlayerAction.SMALL.value) + "$",
+                text="10$ 🟡",
                 callback_data=str(PlayerAction.SMALL.value)
             ),
             InlineKeyboardButton(
-                text=str(PlayerAction.NORMAL.value) + "$",
+                text="25$ 🟠",
                 callback_data=str(PlayerAction.NORMAL.value)
             ),
             InlineKeyboardButton(
-                text=str(PlayerAction.BIG.value) + "$",
+                text="50$ 🔴",
                 callback_data=str(PlayerAction.BIG.value)
             ),
         ]]
@@ -209,25 +210,59 @@ class PokerBotViewer:
         return PlayerAction.CALL
 
     @staticmethod
-    def _get_game_menu_markup(start_game_enabled: bool = False) -> InlineKeyboardMarkup:
+    def _get_game_menu_markup(start_game_enabled: bool = False, game_state: str = "initial") -> InlineKeyboardMarkup:
         keyboard = []
 
-        # Ready button
-        keyboard.append([
-            InlineKeyboardButton(
-                text="✓ آماده",
-                callback_data="ready"
-            )
-        ])
-
-        # Start game button (only shown if there are enough players)
-        if start_game_enabled:
+        # Different buttons based on game state
+        if game_state == "initial" or game_state == "finished":
+            # Ready button for joining game
             keyboard.append([
                 InlineKeyboardButton(
-                    text="▶ شروع بازی",
-                    callback_data="start_game"
+                    text="✅ آماده",
+                    callback_data="ready"
                 )
             ])
+
+            # Start game button (only shown if there are enough players and user is admin)
+            if start_game_enabled:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        text="▶ شروع بازی",
+                        callback_data="start_game"
+                    )
+                ])
+
+            # Tournament option for admins
+            keyboard.append([
+                InlineKeyboardButton(
+                    text="🏆 تورنمنت جدید",
+                    callback_data="create_tournament"
+                )
+            ])
+        else:
+            # During game - show game status
+            keyboard.append([
+                InlineKeyboardButton(
+                    text="ℹ️ وضعیت بازی",
+                    callback_data="show_game_status"
+                )
+            ])
+
+        # Additional menu options
+        menu_row = []
+        menu_row.append(InlineKeyboardButton(
+            text="📊 امار",
+            callback_data="show_stats"
+        ))
+        menu_row.append(InlineKeyboardButton(
+            text="🏆 رده بندی",
+            callback_data="show_leaderboard"
+        ))
+        menu_row.append(InlineKeyboardButton(
+            text="💰 موجودی",
+            callback_data="show_balance"
+        ))
+        keyboard.append(menu_row)
 
         return InlineKeyboardMarkup(keyboard=keyboard)
 
@@ -239,24 +274,36 @@ class PokerBotViewer:
             money: Money,
     ) -> None:
         if len(game.cards_table) == 0:
-            cards_table = "بدون کارت"
+            cards_table = "🃏 کارت جامعه: هیچ کدام"
         else:
-            cards_table = " ".join(game.cards_table)
+            cards_table = "🃏 کارت جامعه: " + " ".join(game.cards_table)
+
+        # Calculate pot odds if applicable
+        if game.max_round_rate > 0:
+            call_amount = max(0, game.max_round_rate - player.round_rate)
+            pot_odds_text = f" | 📊 شانس: {call_amount}:{game.pot-call_amount}" if (game.pot-call_amount) > 0 else ""
+        else:
+            pot_odds_text = ""
+
+        # Create a more detailed status message
         text = (
-            "نوبت {}\n" +
+            "🎮 نوبت: {}\n" +
             "{}\n" +
-            "پول: *{}$*\n" +
-            "حداکثر نرخ دور: *{}$*"
+            "💰 موجودی: *{}$*\n" +
+            "📈 حداکثر شرط دور: *{}$*{}"
         ).format(
             player.mention_markdown,
             cards_table,
             money,
             game.max_round_rate,
+            pot_odds_text
         )
+
         check_call_action = PokerBotViewer.define_check_call_action(
             game, player
         )
         markup = PokerBotViewer._get_turns_markup(check_call_action)
+
         # Use delayed method if available, otherwise use regular method
         if hasattr(self._bot, 'send_message_delayed'):
             self._bot.send_message_delayed(
@@ -302,3 +349,114 @@ class PokerBotViewer:
             chat_id=chat_id,
             message_id=int(message_id),
         )
+
+    def send_game_results(
+            self,
+            chat_id: ChatId,
+            winners_hand_money: list,
+            only_one_player: bool,
+            cards_table: Cards,
+            pot: Money,
+    ) -> None:
+        """Send professional game results with detailed information"""
+        text = "🎊 نتیجه بازی 🎊\n\n"
+
+        for (player, best_hand, money) in winners_hand_money:
+            win_hand = " ".join(best_hand)
+            text += (
+                f"🥇 {player.mention_markdown}:\n" +
+                f"💰 دریافت کرد: *{money} $*\n"
+            )
+            if not only_one_player:
+                text += (
+                    "🃏 ترکیب برنده:\n" +
+                    f"``` {win_hand} ```\n\n"
+                )
+
+        # Include final pot and table cards
+        text += f"팟 نهایی: *{pot}$*\n"
+        if cards_table:
+            text += f"کارت‌های جامعه: {' '.join(cards_table)}\n"
+
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'send_message_delayed'):
+            self._bot.send_message_delayed(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                disable_notification=False,  # Enable notification for game results
+            )
+        else:
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                disable_notification=False,  # Enable notification for game results
+            )
+
+    def send_player_stats(
+            self,
+            chat_id: ChatId,
+            player_stats,  # PlayerStats type - imported dynamically to avoid circular dependency
+    ) -> None:
+        """Send player statistics"""
+        text = (
+            f"📊 اطلاعات بازیکن:\n\n"
+            f"🎮 بازی‌های انجام شده: {player_stats.total_games_played}\n"
+            f"🏆 بازی‌های برنده: {player_stats.total_games_won}\n"
+            f"📈 درصد برد: {player_stats.total_games_won * 100.0 / max(1, player_stats.total_games_played):.1f}%\n"
+            f"💸 سود کل: {player_stats.total_money_earned - player_stats.total_money_spent}$\n"
+            f"💰 سود خالص: {player_stats.total_money_earned}$\n"
+            f"🔥 رشته برنده: {player_stats.current_winning_streak}\n"
+            f"🏆 بهترین رشته: {player_stats.best_winning_streak}\n"
+            f"⏰ زمان بازی: {player_stats.total_time_played}\n"
+        )
+
+        if player_stats.best_hand_won:
+            text += f"🎯 بهترین دست: {player_stats.best_hand_won}\n"
+
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'send_message_delayed'):
+            self._bot.send_message_delayed(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                disable_notification=True,
+            )
+        else:
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                disable_notification=True,
+            )
+
+    def send_leaderboard(
+            self,
+            chat_id: ChatId,
+            top_players: list,
+    ) -> None:
+        """Send top players leaderboard"""
+        text = "🏆 رده بندی برترین بازیکنان:\n\n"
+
+        for i, player in enumerate(top_players, 1):
+            user_id = player['user_id']
+            total_games_won = player['total_games_won']
+            win_rate = player['win_rate']
+            text += f"{i}. {user_id} | 🏆 {total_games_won} | 📊 {win_rate:.1f}%\n"
+
+        # Use delayed method if available, otherwise use regular method
+        if hasattr(self._bot, 'send_message_delayed'):
+            self._bot.send_message_delayed(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                disable_notification=True,
+            )
+        else:
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode='Markdown',
+                disable_notification=True,
+            )
