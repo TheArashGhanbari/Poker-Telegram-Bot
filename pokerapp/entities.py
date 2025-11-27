@@ -75,9 +75,13 @@ class PlayerState(enum.Enum):
 
 class Game:
     def __init__(self):
+        # Initialize menu_message_id before calling reset
+        self.menu_message_id = None
         self.reset()
 
     def reset(self):
+        # Preserve the menu message ID so we can update the game menu after game ends
+        old_menu_message_id = self.menu_message_id
         self.id = str(uuid4())
         self.pot = 0
         self.max_round_rate = 0
@@ -89,6 +93,7 @@ class Game:
         self.trading_end_user_id = 0
         self.ready_users = set()
         self.last_turn_time = datetime.datetime.now()
+        self.menu_message_id = old_menu_message_id  # Preserve the menu message ID for updates
 
     def players_by(self, states: Tuple[PlayerState]) -> List[Player]:
         return list(filter(lambda p: p.state in states, self.players))

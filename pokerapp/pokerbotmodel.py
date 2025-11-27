@@ -2,6 +2,7 @@
 
 import datetime
 import logging
+import re
 import traceback
 from threading import Timer
 from typing import List, Tuple, Dict
@@ -288,11 +289,249 @@ class PokerBotModel:
         )
 
     def _check_access(self, chat_id: ChatId, user_id: UserId) -> bool:
-        chat_admins = self._bot.get_chat_administrators(chat_id)
-        for m in chat_admins:
-            if str(m.user.id) == user_id:
-                return True
+        # Get chat information to determine chat type
+        try:
+            chat = self._bot.get_chat(chat_id)
+            # In private chats, the concept of administrators doesn't apply, so return false
+            if chat.type == 'private':
+                return False
+        except:
+            # If there's an issue getting chat info, assume it's not private
+            pass
+
+        try:
+            chat_admins = self._bot.get_chat_administrators(chat_id)
+            for m in chat_admins:
+                if str(m.user.id) == user_id:
+                    return True
+        except:
+            # If we can't get admins (e.g., in private chat), return False
+            return False
         return False
+
+    def send_game_menu(self, message: Message) -> None:
+        """Send game menu with inline buttons to the chat"""
+        game = self._get_or_create_game(str(message.chat.id))
+        chat_id = str(message.chat.id)
+        user_id = str(message.from_user.id)
+
+        # Check if the user is an admin
+        is_admin = self._check_access(chat_id, user_id)
+
+        # Build players list as text with bullet points
+        players_list_text = ""
+        if game.players:
+            # Sort players alphabetically by name
+            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
+
+            players_list_text = f"✓ بازیکنان ({len(game.players)}):\n"
+            for player in sorted_players:
+                # Extract just the name from the mention markdown
+                # Extract name from markdown mention [name](tg://user?id=1234)
+                name_match = re.search(r'\[([^\]]+)\]', player.mention_markdown)
+                player_name = name_match.group(1) if name_match else player.mention_markdown
+                players_list_text += f"• {player_name}\n"
+        else:
+            players_list_text = "✓ هیچ بازیکنی آماده نیست\n"
+
+        # Determine if start game button should be enabled
+        start_game_enabled = is_admin and len(game.players) >= self._min_players
+
+        # Create markup without players list (players shown in message text)
+        markup = self._view._get_game_menu_markup(start_game_enabled)
+
+        # Send the game menu message with player list
+        sent_message = self._bot.send_message(
+            chat_id=chat_id,
+            text=f"منوی بازی پوکر:\n{players_list_text}",
+            reply_markup=markup,
+            parse_mode='Markdown'
+        )
+
+        # Save the message ID so we can update it later
+        game.menu_message_id = str(sent_message.message_id)
+
+    def handle_ready_button(self, call) -> None:
+        """Handle the ready button press from inline keyboard"""
+        chat_id = str(call.message.chat.id)
+        game = self._get_or_create_game(chat_id)
+        user = call.from_user
+
+        if game.state != GameState.INITIAL:
+            self._bot.answer_callback_query(
+                call.id,
+                text="بازی شروع شده. صبر کنید!"
+            )
+            return
+
+        if len(game.players) >= MAX_PLAYERS:
+            self._bot.answer_callback_query(
+                call.id,
+                text="اتاق پر است"
+            )
+            return
+
+        # Check if user has started private chat with bot
+        user_chat_model = UserPrivateChatModel(
+            user_id=str(user.id),
+            kv=self._kv,
+        )
+        private_chat_id = user_chat_model.get_chat_id()
+        if private_chat_id is None:
+            self._bot.answer_callback_query(
+                call.id,
+                text="لطفا ابتدا ربات را در چت خصوصی خود استارت کنید"
+            )
+            return
+
+        # Check both in ready_users and in players list to prevent duplicates
+        if user.id in game.ready_users:
+            self._bot.answer_callback_query(
+                call.id,
+                text="شما قبلا آماده هستید"
+            )
+            return
+
+        # Additional check: see if player already exists in players list
+        for player in game.players:
+            if player.user_id == str(user.id):
+                self._bot.answer_callback_query(
+                    call.id,
+                    text="شما قبلا آماده هستید"
+                )
+                return
+
+        player = Player(
+            user_id=str(user.id),
+            mention_markdown=f"[{user.first_name}](tg://user?id={user.id})",
+            wallet=WalletManagerModel(str(user.id), self._kv),
+            ready_message_id=str(call.message.message_id),
+        )
+
+        if player.wallet.value() < 2*SMALL_BLIND:
+            self._bot.answer_callback_query(
+                call.id,
+                text="شما پول کافی ندارید"
+            )
+            return
+
+        game.ready_users.add(str(user.id))
+        game.players.append(player)
+
+        # Refresh the game menu to show updated player list (without sending extra message)
+        self.refresh_game_menu(chat_id, call.message.message_id)
+
+        # Note: Game will NOT start automatically - admin must press start_game button
+
+    def refresh_game_menu(self, chat_id: str, original_message_id: str = None) -> None:
+        """Refresh the game menu to show updated player list"""
+        game = self._get_or_create_game(chat_id)
+
+        # Only refresh if we have a stored menu message ID
+        if game.menu_message_id is None:
+            return
+
+        # Build players list as text with bullet points
+        players_list_text = ""
+        if game.players:
+            # Sort players alphabetically by name
+            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
+
+            players_list_text = f"✓ بازیکنان ({len(game.players)}):\n"
+            for player in sorted_players:
+                # Extract just the name from the mention markdown
+                # Extract name from markdown mention [name](tg://user?id=1234)
+                name_match = re.search(r'\[([^\]]+)\]', player.mention_markdown)
+                player_name = name_match.group(1) if name_match else player.mention_markdown
+                players_list_text += f"• {player_name}\n"
+        else:
+            players_list_text = "✓ هیچ بازیکنی آماده نیست\n"
+
+        # Determine if start game button should be enabled (check if there are enough players and an admin is present)
+        # Since we don't have user context for admin check, we'll just check if there are enough players
+        # The admin check will happen when the button is pressed
+        start_game_enabled = len(game.players) >= self._min_players
+
+        # Create markup without players list (players shown in message text)
+        markup = self._view._get_game_menu_markup(start_game_enabled)
+
+        # Edit the existing message
+        try:
+            self._bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=int(game.menu_message_id),
+                text=f"منوی بازی پوکر:\n{players_list_text}",
+                reply_markup=markup,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            # If the message can't be edited (e.g. was deleted), send a new one
+            print(f"Error editing menu message: {e}")
+            # Send a new menu message
+            self.send_game_menu_for_refresh(chat_id)
+
+    def send_game_menu_for_refresh(self, chat_id: str) -> None:
+        """Send a new game menu when the original can't be refreshed"""
+        game = self._get_or_create_game(chat_id)
+
+        # Build players list as text with bullet points
+        players_list_text = ""
+        if game.players:
+            # Sort players alphabetically by name
+            sorted_players = sorted(game.players, key=lambda p: re.search(r'\[([^\]]+)\]', p.mention_markdown).group(1).lower() if re.search(r'\[([^\]]+)\]', p.mention_markdown) else p.mention_markdown.lower())
+
+            players_list_text = f"✓ بازیکنان ({len(game.players)}):\n"
+            for player in sorted_players:
+                # Extract just the name from the mention markdown
+                # Extract name from markdown mention [name](tg://user?id=1234)
+                name_match = re.search(r'\[([^\]]+)\]', player.mention_markdown)
+                player_name = name_match.group(1) if name_match else player.mention_markdown
+                players_list_text += f"• {player_name}\n"
+        else:
+            players_list_text = "✓ هیچ بازیکنی آماده نیست\n"
+
+        # Determine if start game button should be enabled (check if there are enough players)
+        start_game_enabled = len(game.players) >= self._min_players
+
+        # Create markup without players list (players shown in message text)
+        markup = self._view._get_game_menu_markup(start_game_enabled)
+
+        # Send the game menu message
+        sent_message = self._bot.send_message(
+            chat_id=chat_id,
+            text=f"منوی بازی پوکر:\n{players_list_text}",
+            reply_markup=markup,
+            parse_mode='Markdown'
+        )
+
+        # Update the stored message ID
+        game.menu_message_id = str(sent_message.message_id)
+
+    def start_game_from_menu(self, call) -> None:
+        """Start the game from the menu button"""
+        game = self._get_or_create_game(str(call.message.chat.id))
+        chat_id = str(call.message.chat.id)
+
+        if game.state not in (GameState.INITIAL, GameState.FINISHED):
+            self._bot.answer_callback_query(
+                call.id,
+                text="بازی در حال انجام است"
+            )
+            return
+
+        players_active = len(game.players)
+        if players_active >= self._min_players:
+            # Start the game
+            self._start_game(game=game, chat_id=chat_id)
+            self._bot.answer_callback_query(
+                call.id,
+                text="بازی شروع شد!"
+            )
+        else:
+            self._bot.answer_callback_query(
+                call.id,
+                text="بازیکن کافی وجود ندارد"
+            )
 
     def _send_cards_private(self, player: Player, cards: Cards) -> None:
         try:
@@ -461,13 +700,26 @@ class PokerBotModel:
                     "با ترکیب کارت‌های:\n" +
                     f"{win_hand}\n\n"
                 )
-        text += "/ready برای ادامه"
+
+        # Send the game results
         self._view.send_message(chat_id=chat_id, text=text)
 
-        for player in game.players:
-            player.wallet.approve(game.id)
-
+        # Reset the game but preserve the menu message ID so we can update the menu
+        old_menu_message_id = game.menu_message_id
+        old_players = game.players[:]  # Keep a copy of the old players to calculate who won
         game.reset()
+        game.menu_message_id = old_menu_message_id  # Restore the menu message ID for the new game state
+
+        # Refresh the game menu to show the current state (no players yet for new game)
+        try:
+            self.refresh_game_menu(chat_id)
+        except:
+            # If refreshing fails, send a new menu
+            try:
+                self.send_game_menu_for_refresh(chat_id)
+            except:
+                # If everything fails, at least the game is reset
+                pass
 
     def _goto_next_round(self, game: Game, chat_id: ChatId) -> bool:
         # The state of the last player becomes ALL_IN at end of the round .

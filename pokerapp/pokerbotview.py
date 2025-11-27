@@ -208,6 +208,29 @@ class PokerBotViewer:
             return PlayerAction.CHECK
         return PlayerAction.CALL
 
+    @staticmethod
+    def _get_game_menu_markup(start_game_enabled: bool = False) -> InlineKeyboardMarkup:
+        keyboard = []
+
+        # Ready button
+        keyboard.append([
+            InlineKeyboardButton(
+                text="✓ آماده",
+                callback_data="ready"
+            )
+        ])
+
+        # Start game button (only shown if there are enough players)
+        if start_game_enabled:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text="▶ شروع بازی",
+                    callback_data="start_game"
+                )
+            ])
+
+        return InlineKeyboardMarkup(keyboard=keyboard)
+
     def send_turn_actions(
             self,
             chat_id: ChatId,
